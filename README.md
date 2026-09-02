@@ -1,22 +1,48 @@
-# Ritual Predict
+# Ritual Hunters
 
-A self-resolving binary prediction market on [Ritual Chain](https://docs.ritualfoundation.org).
+Precision prediction markets powered by **Ritual Chain**'s on-chain AI scheduler (Chain ID: 1979).
 
-Create a market like _"Will ETH/USD be at least $4,000 when this market resolves?"_, stake native
-RITUAL on YES or NO, and watch it settle itself. When the betting window closes, **nobody presses a
-resolve button and no backend cron job runs**. The Ritual Scheduler wakes the contract at a block
-fixed when the market was created; the contract calls the HTTP precompile to read the configured
-oracle URL, extracts one number with the jq precompile, compares it to the target, and settles.
-Winners then pull their proportional share of the pool.
+Set a hunt like _"Will BTC/USD stay above $115,000 at resolution?"_, stake native RITUAL on YES or NO, and watch it settle autonomously — zero backend cron, zero manual resolver. The Ritual Scheduler wakes the contract at a target block, fetches the oracle via TEE, and finalizes. Winners claim their share of the pool.
 
 ---
 
-## Architecture
+## ✨ Features
+
+### Dual Mode — SCOUT & HUNT
+| | SCOUT (Demo) | HUNT (Live) |
+|---|---|---|
+| Wallet required | ❌ | ✅ |
+| Transactions | Simulated (2s delay + fake tx hash) | Real on-chain |
+| Hunts | Pre-seeded demo hunts | Live from RitualPredict contract |
+| State | Zustand + localStorage | wagmi + viem |
+
+Switch freely between modes using the **SCOUT / HUNT** toggle in the navbar.
+
+### Pages
+| Route | Description |
+|---|---|
+| `/` | Hero, live stats strip, How It Works, active hunts preview |
+| `/markets` | Hunt Board with state filters (Live / Locked / Tracking / Claimed / Void) |
+| `/markets/[id]` | Hunt detail — staking panel, odds bar, resolution countdown, activity feed |
+| `/create` | Set a Trap — 4-step wizard: question, oracle config, timing, review & deploy |
+| `/positions` | My Kills — active stakes, claim winnings or refunds |
+| `/admin` | Command Post — execution balance monitor, fund execution wallet, system addresses |
+
+### Smart Contract Integration
+- Full ABI integration with `RitualPredict.sol` on Ritual Chain (1979)
+- On-chain reads via `useReadContract` with 5s polling
+- Writes via `writeContractAsync` + `waitForTransactionReceipt`
+- `MarketCreated` event parsing for new market ID extraction
+- Named output decoding for `stakesOf()` return struct
+
+---
+
+## 🏗 Architecture
 
 ```
                  createMarket()                    ┌──────────────────────────┐
-   user  ─────────────────────────────────────────▶│  RitualPredict.sol       │
-   user  ─────────── bet(id, YES|NO) ─────────────▶│                          │
+   user  ────────────────────────────────────────▶│  RitualPredict.sol       │
+   user  ─────────── bet(id, YES|NO) ────────────▶│                          │
                                                    │  markets, pools, stakes  │
                                      schedule() ◀──┤                          │
                                                    └──────────────────────────┘
@@ -27,82 +53,146 @@ Winners then pull their proportional share of the pool.
     │ 3 attempts, 200 blocks apart│                        │ RitualWallet 0x532F…   │
     └─────────────────────────────┘                        │ prepaid execution fees │
                                                            └────────────────────────┘
-                        inside that one scheduled transaction:
-
-   TEEServiceRegistry 0x9644…  ──pickServiceByCapability(HTTP_CALL)──▶  executor address
-   HTTP precompile    0x0801   ──GET oracleUrl (in a TEE)───────────▶  demo oracle
-   jq  precompile     0x0803   ──jsonPath, outputType=uint256───────▶  observed value
-                                          │
-                                          ▼
-                        observed ⋈ target  →  Resolved(YES|NO)
-                        read failed 3×     →  Invalid (everyone refunds)
 ```
 
 ---
 
-### Design decisions worth knowing
+## 🛠 Tech Stack
 
-**Deadlines are block numbers, not timestamps.** The Scheduler fires at a _block_, so betting also
-closes at a _block_. That way "betting is closed" and "the Scheduler woke us" can never disagree,
-whatever the chain's block time does. `createMarket` takes human durations in seconds and converts
-them using the `blockTimeMs` fixed at deployment. Nothing on-chain reads `block.timestamp`.
-
-**On Ritual Chain, `block.timestamp` is Unix milliseconds** (≈`1.786e12`), not seconds — verified
-against the live chain, not assumed. That is a good reason to avoid it entirely, which this contract
-does. Measured block time was ≈195 ms when this was written; run
-`npx hardhat run scripts/block-time.ts` to check it for yourself.
-
-**A failed oracle read is never a NO.** `onScheduledResolve` treats a precompile failure, a non-200
-response, an undecodable envelope, an executor error message, and an unparseable body all as
-_failures_, not as a negative outcome. The response decode happens through an external `try`, so
-malformed bytes surface as a caught failure instead of reverting the execution and rolling back the
-attempt counter.
-
-**Retries are the Scheduler's own mechanism.** `createMarket` books `numCalls = 3` executions
-`frequency = 200` blocks apart in a single `schedule()` call. Attempt 1 lands at `resolveBlock`; if
-it succeeds, the contract `cancel()`s the remainder; if all three fail, the market becomes `Invalid`
-and every stake is refundable. Each attempt re-rolls the TEE executor seed, so one unhealthy
-executor cannot sink a market. The callback is idempotent, so a leftover execution is harmless.
-
-**No executor is hardcoded.** The contract calls
-`TEEServiceRegistry.pickServiceByCapability(HTTP_CALL, true, seed, 8)` at resolution time.
-
-**Payouts are pull-based and loop-free.** `claimWinnings` computes
-`stake × totalPool ÷ winningPool` for the caller only. Integer division leaves sub-wei dust in the
-contract; that is deliberate and negligible.
-
-**Empty winning side → refundable.** Pari-mutuel has no denominator when nobody backed the winning
-answer, so the market records the outcome and observed value, then becomes `Invalid` so everyone
-takes their stake back.
-
-**Resolution parameters are immutable.** `target`, `comparator`, `oracleUrl`, `jsonPath`, and
-`resolveBlock` have no setter. The `ResolutionRuleSet` event records them at creation.
+| Layer | Technology |
+|---|---|
+| Framework | Next.js 14 (App Router) |
+| Styling | Vanilla CSS + Tailwind utilities |
+| Animations | Framer Motion |
+| Wallet | RainbowKit v2 + wagmi v2 + viem v2 |
+| State | Zustand (demo store) + TanStack Query (live) |
+| Icons | Lucide React |
+| Chain | Ritual Chain — Chain ID 1979, ~350ms block time |
 
 ---
 
-## Prerequisites
+## 🚀 Getting Started
 
-- Node.js 20+ and `pnpm`
-- A wallet with testnet RITUAL from <https://faucet.ritualfoundation.org>
+### Prerequisites
+- Node.js 18+
+- A WalletConnect Cloud project ID → [cloud.walletconnect.com](https://cloud.walletconnect.com)
+- (Optional) A deployed `RitualPredict` contract address for Live mode
 
-## Setup
+### Installation
 
 ```bash
-cd hardhat
-pnpm install
-cp .env.example .env
+# Clone and install
+git clone https://github.com/your-username/ritual-hunters.git
+cd ritual-hunters
+npm install
+
+# Configure environment
+cp .env.local.example .env.local
+```
+
+Edit `.env.local`:
+
+```env
+# Required — get from https://cloud.walletconnect.com
+NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=your_project_id_here
+
+# Optional — for Live mode with a deployed contract
+NEXT_PUBLIC_PREDICT_ADDRESS=0xYourContractAddress
+```
+
+### Run
+
+```bash
+# Development
+npm run dev
+# → http://localhost:3000
+
+# Production build
+npm run build
+npm start
 ```
 
 ---
 
-## Scope
+## 🔑 Environment Variables
 
-Intentionally not included: an AMM, an order book, an order-matching engine, governance, a separate
-ERC-20, a centralized resolver, or an upgrade proxy. Staking uses the chain's native asset and the
-betting model is plain pari-mutuel: two running totals and one mapping per side.
+| Variable | Required | Description |
+|---|---|---|
+| `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` | ✅ | WalletConnect v2 project ID |
+| `NEXT_PUBLIC_PREDICT_ADDRESS` | ❌ | RitualPredict contract address (Live mode) |
+| `NEXT_PUBLIC_DEMO_ORACLE_URL` | ❌ | Demo oracle endpoint override |
 
-## Reference
+> **Security:** `.env.local` is listed in `.gitignore` and will never be committed.
 
-- Ritual Chain docs — <https://docs.ritualfoundation.org>
-- dApp skills — <https://github.com/ritual-foundation/ritual-dapp-skills>
-- Explorer — <https://explorer.ritualfoundation.org> · Faucet — <https://faucet.ritualfoundation.org>
+---
+
+## 📁 Project Structure
+
+```
+├── app/
+│   ├── page.tsx              # Home — hero, stats, active hunts
+│   ├── markets/page.tsx      # Hunt Board with filters
+│   ├── markets/[id]/page.tsx # Hunt detail + staking panel
+│   ├── create/page.tsx       # Set a Trap wizard
+│   ├── positions/page.tsx    # My Kills + claim
+│   ├── admin/page.tsx        # Command Post dashboard
+│   ├── api/oracle/           # Price oracle routes (ETH, BTC, SOL)
+│   ├── layout.tsx
+│   └── globals.css           # Crosshair grid bg, CSS vars, keyframes
+├── components/
+│   ├── layout/               # Navbar, Footer, DemoBanner
+│   ├── markets/              # MarketCard, BettingPanel, OddsBar, etc.
+│   ├── create/               # CreateMarketWizard, ComparatorSelect
+│   ├── positions/            # PositionCard, ClaimButton
+│   ├── ui/                   # GlowCard, GlowButton, Toast, Confetti
+│   └── wallet/               # ConnectButton, ChainGuard
+├── hooks/                    # 11 custom hooks (useMarket, useBet, etc.)
+├── contexts/                 # AppModeContext (SCOUT/HUNT)
+├── lib/
+│   ├── abi.ts                # RitualPredict ABI
+│   ├── chains.ts             # Ritual Chain config
+│   ├── constants.ts          # Contract addresses, thresholds
+│   ├── demo-data.ts          # Seeded demo hunts
+│   ├── demo-store.ts         # Zustand store for demo mode
+│   ├── types.ts              # TypeScript interfaces
+│   ├── utils.ts              # Formatting, payout math, helpers
+│   └── wagmi.ts              # wagmi + RainbowKit config
+└── public/
+    └── ritual-logo.png       # Ritual Foundation logo
+```
+
+---
+
+## 🎨 Design System
+
+- **Palette:** Cosmic void (`#07060f`), Hunter violet (`#a855f7`), Hunter cyan (`#22d3ee`), Rose (`#f43f5e`), Warning orange (`#fb923c`)
+- **Typography:** Rajdhani (headings) · Plus Jakarta Sans (body) · IBM Plex Mono (code/numbers)
+- **Texture:** 40px crosshair target grid with ambient violet glow
+- **Animations:** Page enter, skeleton shimmer, confetti on wins, toast notifications
+- **Cards:** Glassmorphism with `backdrop-filter: blur`
+
+---
+
+## 🔗 Ritual Chain Resources
+
+- Docs — <https://docs.ritualfoundation.org>
+- Explorer — <https://explorer.ritualfoundation.org>
+- Faucet — <https://faucet.ritualfoundation.org>
+- dApp Skills — <https://github.com/ritual-foundation/ritual-dapp-skills>
+
+---
+
+## 📋 Contract Architecture Notes
+
+**Deadlines are block numbers, not timestamps.** The Scheduler fires at a block, so betting closes at a block — `createMarket` takes human durations in seconds and converts them via `blockTimeMs`.
+
+**A failed oracle read is never a NO.** HTTP precompile failure, non-200 response, or undecodable output all become `Invalid` (full refund to all), never a forced NO.
+
+**Retries are built-in.** `createMarket` books `numCalls = 3` executions `200` blocks apart. On success the contract cancels remaining calls. If all 3 fail → `Invalid`.
+
+**Payouts are pull-based.** `claimWinnings` computes `stake × totalPool ÷ winningPool` for caller only. No loops, no re-entrancy risk.
+
+---
+
+*Assignment completed by **Blueberry***
+
